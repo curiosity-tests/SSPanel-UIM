@@ -1,6 +1,40 @@
 name: CI Pipeline
 
+# racecar fork-testbed patch. Changes from upstream:
+#   1. workflow_dispatch with a `leg` input so racecar can drive the run and pick
+#      baseline vs instrumented.
+#   2. actions/checkout -> crashappsec/action-checkout, which wraps checkout and
+#      setup-chalk-action; `chalk:` is the only variable separating the arms.
+#   3. permissions: id-token: write for the action's OIDC connect (the block
+#      zeroes unlisted scopes, so everything upstream relied on is restated).
+#   4. A fail-closed assertion on the instrumented arm.
+#   5. fail-fast: false on every matrix -- a measurement-integrity change, not a
+#      build change: the instrumented arm has strictly more failure surface, so
+#      leaving fail-fast on cancels instrumented siblings more often than
+#      baseline ones and biases the comparison.
+#   6. the concurrency group carries the leg. Both arms run on the same ref, so
+#      upstream's github.ref-keyed group put them in one group and the second
+#      dispatch cancelled the first. Also cancellation-only, never a build change.
+# Build and test COMMANDS are unchanged from upstream.
+
+run-name: "CI Pipeline ${{ inputs.leg || 'push' }} ${{ inputs.racecar_run }}"
+
 on:
+  workflow_dispatch:
+    inputs:
+      leg:
+        description: "baseline (uninstrumented) or instrumented (under chalk/curiosity)"
+        type: choice
+        options: [instrumented, baseline]
+        default: instrumented
+      profile:
+        description: "CrashOverride chalk profile"
+        type: string
+        default: curiosity-tests-racecar
+      racecar_run:
+        description: "racecar correlation token, echoed into the run name"
+        type: string
+        default: ""
   push:
     branches: [ master ]
   pull_request:
@@ -8,21 +42,40 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+
+env:
+  CHALK_ON: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
 
 jobs:
   changes:
     permissions:
       contents: read
       pull-requests: read
+      id-token: write
     runs-on: ubuntu-latest
     outputs:
       php: ${{ steps.filter.outputs.php }}
       config: ${{ steps.filter.outputs.config }}
       tests: ${{ steps.filter.outputs.tests }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: crashappsec/action-checkout@main
         with:
+          chalk: ${{ env.CHALK_ON }}
+          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+          observables_continue_on_error: false
+          lfs: false
           fetch-depth: 0
+
+      - name: Assert instrumentation is live
+        # Socket existence, not LD_PRELOAD: co-monitor's loader clears
+        # LD_PRELOAD once it has injected, so an empty value is what success
+        # looks like. co-hostd also daemonizes, so pgrep does not match it.
+        if: env.CHALK_ON == 'true'
+        run: |
+          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
+          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
+
       - uses: dorny/paths-filter@v4
         id: filter
         with:
@@ -40,7 +93,7 @@ jobs:
 
   test:
     needs: changes
-    if: ${{ needs.changes.outputs.php == 'true' || needs.changes.outputs.tests == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changes.outputs.php == 'true' || needs.changes.outputs.tests == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     
     strategy:
@@ -75,7 +128,22 @@ jobs:
           --health-retries 5
     
     steps:
-    - uses: actions/checkout@v7
+    - uses: crashappsec/action-checkout@main
+      with:
+        chalk: ${{ env.CHALK_ON }}
+        profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+        observables_continue_on_error: false
+        lfs: false
+
+    - name: Assert instrumentation is live
+      # Socket existence, not LD_PRELOAD: co-monitor's loader clears
+      # LD_PRELOAD once it has injected, so an empty value is what success
+      # looks like. co-hostd also daemonizes, so pgrep does not match it.
+      if: env.CHALK_ON == 'true'
+      run: |
+        test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
+        test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
+
     
     - name: Setup PHP
       uses: shivammathur/setup-php@v2
@@ -147,11 +215,26 @@ jobs:
   code-quality:
     needs: changes
     # Run quality checks if PHP files changed
-    if: ${{ needs.changes.outputs.php == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changes.outputs.php == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v7
+    - uses: crashappsec/action-checkout@main
+      with:
+        chalk: ${{ env.CHALK_ON }}
+        profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+        observables_continue_on_error: false
+        lfs: false
+
+    - name: Assert instrumentation is live
+      # Socket existence, not LD_PRELOAD: co-monitor's loader clears
+      # LD_PRELOAD once it has injected, so an empty value is what success
+      # looks like. co-hostd also daemonizes, so pgrep does not match it.
+      if: env.CHALK_ON == 'true'
+      run: |
+        test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
+        test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
+
     
     - name: Setup PHP
       uses: shivammathur/setup-php@v2
@@ -197,7 +280,22 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v7
+    - uses: crashappsec/action-checkout@main
+      with:
+        chalk: ${{ env.CHALK_ON }}
+        profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+        observables_continue_on_error: false
+        lfs: false
+
+    - name: Assert instrumentation is live
+      # Socket existence, not LD_PRELOAD: co-monitor's loader clears
+      # LD_PRELOAD once it has injected, so an empty value is what success
+      # looks like. co-hostd also daemonizes, so pgrep does not match it.
+      if: env.CHALK_ON == 'true'
+      run: |
+        test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
+        test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
+
     
     - name: Setup PHP
       uses: shivammathur/setup-php@v2
