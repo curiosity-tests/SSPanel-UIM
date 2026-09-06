@@ -45,7 +45,7 @@ permissions:
   id-token: write
 
 env:
-  CHALK_ON: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+  CHALK_ON: ${{ inputs.leg == 'instrumented' }}
 
 jobs:
   changes:
@@ -93,7 +93,7 @@ jobs:
 
   test:
     needs: changes
-    if: ${{ needs.changes.outputs.php == 'true' || needs.changes.outputs.tests == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ needs.changes.outputs.php == 'true' || needs.changes.outputs.tests == 'true' || 'push' == 'push' || 'push' == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     
     strategy:
@@ -215,7 +215,7 @@ jobs:
   code-quality:
     needs: changes
     # Run quality checks if PHP files changed
-    if: ${{ needs.changes.outputs.php == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ needs.changes.outputs.php == 'true' || 'push' == 'push' || 'push' == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     
     steps:
